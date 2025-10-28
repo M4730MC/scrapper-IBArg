@@ -1,62 +1,17 @@
-import streamlit as st
-import requests
-from bs4 import BeautifulSoup
-import pandas as pd
-from datetime import datetime
-import re
-
-st.set_page_config(page_title="Scraper Electromedicina Argentina V9", layout="wide")
-st.title("🩺 Scraper Avanzado de Noticias de Electromedicina - Argentina V9")
-st.write("Noticias sobre equipos médicos, extrayendo tipo, modelo, modalidad, ubicación y marca automáticamente.")
-
-# Palabras clave de equipos y sinónimos
-equipos_keywords = ["resonador", "resonancia", "tomógrafo", "tomografía", "rayos X", "angiografo", "angiografía"]
-
-# Posibles marcas
-marcas_keywords = ["Philips", "Siemens", "GE", "Toshiba", "Canon", "Hitachi", "Fujifilm"]
-
-# Posibles ubicaciones (nombres de hospitales o clínicas)
-hospital_keywords = ["Hospital", "Clínica", "Sanatorio", "Fundación", "Instituto", "Centro de Salud"]
-
-# Modalidad por tipo
-modalidad_dict = {
-    "resonador": "MR",
-    "resonancia": "MR",
-    "tomógrafo": "CT",
-    "tomografía": "CT",
-    "rayos X": "DXR",
-    "angiografo": "IGT",
-    "angiografía": "IGT"
-}
-
-# Fuentes
-sources = {
-    "Google News": "https://news.google.com/search?q=electromedicina+OR+resonador+OR+resonancia+OR+tomógrafo+OR+tomografía+OR+rayos+X+OR+angiografo&hl=es-419&gl=AR&ceid=AR:es-419",
-    "Ministerio de Salud": "https://www.argentina.gob.ar/salud/noticias",
-    "Clarin Salud": "https://www.clarin.com/salud/",
-    "Cronista Salud": "https://www.cronista.com/category/salud/",
-    "Infobae Salud": "https://www.infobae.com/salud/",
-    "La Nación Salud": "https://www.lanacion.com.ar/salud/"
-}
-
-st.sidebar.header("Seleccionar fuente (o Todas)")
-selected_source = st.sidebar.selectbox("Fuente", ["Todas"] + list(sources.keys()))
-st.write(f"### Fuente seleccionada: {selected_source}")
-
 if st.button("🔍 Iniciar scraping"):
     st.info("Buscando noticias, esto puede tardar un poco...")
 
-    all_articles = []
+    all_articles = []  # Inicializar SIEMPRE antes de todo
 
     def scrap_url(name, url):
         headers = {"User-Agent": "Mozilla/5.0"}
+        articles = []
         try:
             response = requests.get(url, headers=headers, timeout=10)
-        except:
-            return []
-
-        soup = BeautifulSoup(response.text, "html.parser")
-        articles = []
+            soup = BeautifulSoup(response.text, "html.parser")
+        except Exception as e:
+            st.warning(f"No se pudo acceder a {name}: {e}")
+            return articles  # devuelve lista vacía, no corta todo
 
         for a in soup.find_all("a"):
             title = a.get_text().strip()
@@ -66,80 +21,78 @@ if st.button("🔍 Iniciar scraping"):
 
             # Normalizar links relativos
             if link.startswith("/"):
-                if "google.com" in url:
-                    link = "https://news.google.com" + link[1:]
-                elif "argentina.gob.ar" in url:
-                    link = "https://www.argentina.gob.ar" + link
-                elif "clarin.com" in url:
-                    link = "https://www.clarin.com" + link
-                elif "cronista.com" in url:
-                    link = "https://www.cronista.com" + link
-                elif "infobae.com" in url:
-                    link = "https://www.infobae.com" + link
-                elif "lanacion.com.ar" in url:
-                    link = "https://www.lanacion.com.ar" + link
+                base = url.split("/")[0] + "//" + url.split("/")[2]
+                link = base + link
 
-            # Detectar tipo de equipo
             tipo = next((k for k in equipos_keywords if k.lower() in title.lower()), None)
-            if tipo:
-                texto_completo = title
+            if not tipo:
+                continue
 
-                # Descargar contenido completo de la noticia
-                try:
-                    resp2 = requests.get(link, headers=headers, timeout=10)
-                    soup2 = BeautifulSoup(resp2.text, "html.parser")
-                    texto_completo += " " + " ".join([p.get_text() for p in soup2.find_all("p")])
-                except:
-                    pass
+            texto_completo = title
+            soup2 = None
+            try:
+                resp2 = requests.get(link, headers=headers, timeout=10)
+                soup2 = BeautifulSoup(resp2.text, "html.parser")
+                texto_completo += " " + " ".join([p.get_text() for p in soup2.find_all("p")])
+            except:
+                pass
 
-                # Fecha
-                fecha_tag = soup2.find("time") if 'soup2' in locals() else None
-                fecha = None
-                if fecha_tag and fecha_tag.has_attr("datetime"):
-                    fecha = fecha_tag["datetime"][:10]
-                elif fecha_tag:
-                    fecha = fecha_tag.get_text().strip()[:10]
-                if not fecha:
-                    fecha = f"*{datetime.today().strftime('%Y-%m-%d')}*"
+            fecha_tag = soup2.find("time") if soup2 else None
+            if fecha_tag and fecha_tag.has_attr("datetime"):
+                fecha = fecha_tag["datetime"][:10]
+            elif fecha_tag:
+                fecha = fecha_tag.get_text().strip()[:10]
+            else:
+                fecha = f"*{datetime.today().strftime('%Y-%m-%d')}*"
 
-                # Marca
-                marca = next((m for m in marcas_keywords if re.search(r'\b{}\b'.format(m), texto_completo, re.IGNORECASE)), "")
+            marca = next((m for m in marcas_keywords if re.search(rf'\b{m}\b', texto_completo, re.IGNORECASE)), "")
+            modelo_match = re.search(
+                rf"({'|'.join(marcas_keywords + equipos_keywords)})\s+([A-Za-z0-9\.\-\s]+)",
+                texto_completo,
+                re.IGNORECASE
+            )
+            modelo = modelo_match.group(0) if modelo_match else ""
 
-                # Modelo (extraer frase cercana a marca/tipo, ej: "Philips Ingenia 1.5T")
-                modelo = ""
-                modelo_match = re.search(r"({}|{})\s+([A-Za-z0-9\.\-\s]+)".format("|".join(marcas_keywords), "|".join(equipos_keywords)),
-                                         texto_completo, re.IGNORECASE)
-                if modelo_match:
-                    modelo = modelo_match.group(0)
+            ubicacion = ""
+            for h in hospital_keywords:
+                match = re.search(rf'({h} [A-Za-zÁÉÍÓÚÑáéíóúñ0-9\s]+)', texto_completo)
+                if match:
+                    ubicacion = match.group(1)
+                    break
 
-                # Ubicación (nombre exacto del hospital o clínica)
-                ubicacion = ""
-                for h in hospital_keywords:
-                    match = re.search(r'({} [A-Za-z0-9\s]+)'.format(h), texto_completo)
-                    if match:
-                        ubicacion = match.group(1)
-                        break
+            modalidad = modalidad_dict.get(tipo.lower(), "")
 
-                # Modalidad
-                modalidad = modalidad_dict.get(tipo.lower(), "")
-
-                articles.append({
-                    "Tipo": tipo,
-                    "Modelo": modelo,
-                    "Modalidad": modalidad,
-                    "Fecha instalación": fecha,
-                    "Ubicación": ubicacion,
-                    "Marca": marca,
-                    "Fuente": name,
-                    "Título": title,
-                    "Link": link
-                })
+            articles.append({
+                "Tipo": tipo,
+                "Modelo": modelo,
+                "Modalidad": modalidad,
+                "Fecha instalación": fecha,
+                "Ubicación": ubicacion,
+                "Marca": marca,
+                "Fuente": name,
+                "Título": title,
+                "Link": link
+            })
         return articles
 
-    # Scrapear todas o una fuente
-    if selected_source == "Todas":
-        for name, url in sources.items():
-            all_articles.extend(scrap_url(name, url))
-    else:
-        all_artic_
+    # Asegurar siempre inicialización
+    try:
+        if selected_source == "Todas":
+            for name, url in sources.items():
+                all_articles.extend(scrap_url(name, url))
+        else:
+            all_articles = scrap_url(selected_source, sources[selected_source])
+    except Exception as e:
+        st.error(f"Ocurrió un error inesperado: {e}")
+        all_articles = []
 
+    # Mostrar resultados
+    if all_articles:
+        df = pd.DataFrame(all_articles).drop_duplicates()
+        st.success(f"Se encontraron {len(df)} noticias relevantes.")
+        st.dataframe(df, use_container_width=True)
+
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button("📥 Descargar CSV", csv, "noticias_equipos_medicos.csv", "text/csv")
+    else:
+        st.warning("No se encontraron resultados.")
