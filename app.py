@@ -5,18 +5,29 @@ import pandas as pd
 from datetime import datetime
 import re
 
-st.set_page_config(page_title="Scraper Electromedicina Argentina V8", layout="wide")
-st.title("🩺 Scraper de Noticias de Electromedicina - Argentina V8")
-st.write("Noticias sobre equipos médicos, priorizando las más recientes por tipo de equipo, con extracción automática de marca y ubicación.")
+st.set_page_config(page_title="Scraper Electromedicina Argentina V9", layout="wide")
+st.title("🩺 Scraper Avanzado de Noticias de Electromedicina - Argentina V9")
+st.write("Noticias sobre equipos médicos, extrayendo tipo, modelo, modalidad, ubicación y marca automáticamente.")
 
-# Palabras clave de equipos
+# Palabras clave de equipos y sinónimos
 equipos_keywords = ["resonador", "resonancia", "tomógrafo", "tomografía", "rayos X", "angiografo", "angiografía"]
 
 # Posibles marcas
 marcas_keywords = ["Philips", "Siemens", "GE", "Toshiba", "Canon", "Hitachi", "Fujifilm"]
 
-# Palabras clave de ubicación
-ubicaciones_keywords = ["Hospital", "Clínica", "Sanatorio", "Buenos Aires", "Córdoba", "Rosario", "Mendoza", "La Plata"]
+# Posibles ubicaciones (nombres de hospitales o clínicas)
+hospital_keywords = ["Hospital", "Clínica", "Sanatorio", "Fundación", "Instituto", "Centro de Salud"]
+
+# Modalidad por tipo
+modalidad_dict = {
+    "resonador": "MR",
+    "resonancia": "MR",
+    "tomógrafo": "CT",
+    "tomografía": "CT",
+    "rayos X": "DXR",
+    "angiografo": "IGT",
+    "angiografía": "IGT"
+}
 
 # Fuentes
 sources = {
@@ -68,7 +79,7 @@ if st.button("🔍 Iniciar scraping"):
                 elif "lanacion.com.ar" in url:
                     link = "https://www.lanacion.com.ar" + link
 
-            # Filtrar títulos relevantes
+            # Detectar tipo de equipo
             tipo = next((k for k in equipos_keywords if k.lower() in title.lower()), None)
             if tipo:
                 texto_completo = title
@@ -94,11 +105,28 @@ if st.button("🔍 Iniciar scraping"):
                 # Marca
                 marca = next((m for m in marcas_keywords if re.search(r'\b{}\b'.format(m), texto_completo, re.IGNORECASE)), "")
 
-                # Ubicación
-                ubicacion = next((u for u in ubicaciones_keywords if re.search(r'\b{}\b'.format(u), texto_completo, re.IGNORECASE)), "")
+                # Modelo (extraer frase cercana a marca/tipo, ej: "Philips Ingenia 1.5T")
+                modelo = ""
+                modelo_match = re.search(r"({}|{})\s+([A-Za-z0-9\.\-\s]+)".format("|".join(marcas_keywords), "|".join(equipos_keywords)),
+                                         texto_completo, re.IGNORECASE)
+                if modelo_match:
+                    modelo = modelo_match.group(0)
+
+                # Ubicación (nombre exacto del hospital o clínica)
+                ubicacion = ""
+                for h in hospital_keywords:
+                    match = re.search(r'({} [A-Za-z0-9\s]+)'.format(h), texto_completo)
+                    if match:
+                        ubicacion = match.group(1)
+                        break
+
+                # Modalidad
+                modalidad = modalidad_dict.get(tipo.lower(), "")
 
                 articles.append({
                     "Tipo": tipo,
+                    "Modelo": modelo,
+                    "Modalidad": modalidad,
                     "Fecha instalación": fecha,
                     "Ubicación": ubicacion,
                     "Marca": marca,
@@ -113,29 +141,5 @@ if st.button("🔍 Iniciar scraping"):
         for name, url in sources.items():
             all_articles.extend(scrap_url(name, url))
     else:
-        all_articles = scrap_url(selected_source, sources[selected_source])
+        all_artic_
 
-    if all_articles:
-        df = pd.DataFrame(all_articles).drop_duplicates()
-
-        # Convertir fechas reales a datetime para ordenar (ignorar cursivas)
-        def parse_fecha(x):
-            return datetime.today() if '*' in x else pd.to_datetime(x)
-        df['Fecha_ord'] = df['Fecha instalación'].apply(parse_fecha)
-
-        # Ordenar por Tipo y Fecha descendente
-        df = df.sort_values(['Tipo', 'Fecha_ord'], ascending=[True, False]).drop(columns=['Fecha_ord'])
-
-        st.success(f"Se encontraron {len(df)} noticias relevantes.")
-
-        # Resaltar las más recientes (primeras por Tipo)
-        def highlight_recent(row):
-            fecha = row['Fecha instalación']
-            return ['background-color: #FFFACD' if '*' not in fecha else '' for _ in row]
-
-        st.dataframe(df.style.apply(highlight_recent, axis=1), use_container_width=True)
-
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Descargar CSV", csv, "noticias_equipos_medicos_v8.csv", "text/csv")
-    else:
-        st.warning("No se encontraron resultados.")
