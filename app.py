@@ -3,29 +3,26 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
-st.set_page_config(page_title="Scraper de Electromedicina Argentina", layout="wide")
-st.title("🩺 Scraper de Base Instalada de Electromedicina en Argentina")
-st.write("Esta app busca noticias recientes sobre equipos médicos, hospitales y tecnología en salud en Argentina.")
+st.set_page_config(page_title="Scraper de Electromedicina Argentina V2", layout="wide")
+st.title("🩺 Scraper de Noticias de Electromedicina - Argentina V2")
+st.write("Busca noticias sobre equipos médicos, hospitales y tecnología en salud en varias fuentes.")
 
-default_sources = {
+# --- Fuentes disponibles ---
+sources = {
     "Google News - Electromedicina": "https://news.google.com/search?q=electromedicina+Argentina&hl=es-419&gl=AR&ceid=AR:es-419",
+    "Ministerio de Salud - Noticias": "https://www.argentina.gob.ar/salud/noticias",
+    "Clarin - Salud": "https://www.clarin.com/salud/",
+    "Cronista - Salud": "https://www.cronista.com/category/salud/"
 }
 
-st.sidebar.header("Fuentes de scraping")
-new_url = st.sidebar.text_input("Agregar nueva URL")
-
-if "sources" not in st.session_state:
-    st.session_state.sources = default_sources.copy()
-
-if new_url:
-    st.session_state.sources[f"Nueva fuente {len(st.session_state.sources)+1}"] = new_url
-
-selected_source = st.sidebar.selectbox("Elegí una fuente", list(st.session_state.sources.keys()))
-url = st.session_state.sources[selected_source]
-
+# --- Sidebar ---
+st.sidebar.header("Seleccionar fuente")
+selected_source = st.sidebar.selectbox("Elegí una fuente", list(sources.keys()))
+url = sources[selected_source]
 st.write(f"### Fuente seleccionada: {selected_source}")
 st.write(url)
 
+# Botón para scrapear
 if st.button("🔍 Iniciar scraping"):
     st.info("Buscando noticias...")
 
@@ -34,13 +31,46 @@ if st.button("🔍 Iniciar scraping"):
     soup = BeautifulSoup(response.text, "html.parser")
 
     articles = []
-    for item in soup.find_all("a"):
-        title = item.get_text().strip()
-        link = item.get("href", "")
-        if title and "articles" in link:
-            link = "https://news.google.com" + link[1:]
-            articles.append({"Título": title, "Link": link})
 
+    # --- Google News ---
+    if "Google News" in selected_source:
+        for item in soup.find_all("a"):
+            title = item.get_text().strip()
+            link = item.get("href", "")
+            if title and "articles" in link:
+                link = "https://news.google.com" + link[1:]
+                articles.append({"Título": title, "Link": link})
+
+    # --- Ministerio de Salud ---
+    elif "Ministerio" in selected_source:
+        for item in soup.find_all("div", class_="field--title"):
+            a_tag = item.find("a")
+            if a_tag:
+                title = a_tag.get_text().strip()
+                link = "https://www.argentina.gob.ar" + a_tag.get("href", "")
+                articles.append({"Título": title, "Link": link})
+
+    # --- Clarin ---
+    elif "Clarin" in selected_source:
+        for item in soup.find_all("a", class_="headline"):
+            title = item.get_text().strip()
+            link = item.get("href", "")
+            if link and not link.startswith("http"):
+                link = "https://www.clarin.com" + link
+            if title and link:
+                articles.append({"Título": title, "Link": link})
+
+    # --- Cronista ---
+    elif "Cronista" in selected_source:
+        for item in soup.find_all("h3"):
+            a_tag = item.find("a")
+            if a_tag:
+                title = a_tag.get_text().strip()
+                link = a_tag.get("href", "")
+                if title and link:
+                    articles.append({"Título": title, "Link": link})
+
+    # --- Mostrar resultados ---
     if articles:
         df = pd.DataFrame(articles).drop_duplicates()
         st.success(f"Se encontraron {len(df)} noticias.")
