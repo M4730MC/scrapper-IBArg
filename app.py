@@ -1,5 +1,5 @@
-# app.py - Scraper Electromedicina V13 (Streamlit)
-# Versión: añade LinkedIn (pasivo) + fuentes institucionales + COMPR.AR
+# app.py - Scraper Electromedicina V15 (Streamlit)
+# Enfoque: LinkedIn (pasivo usando snippets de Google) + distribuidores/portales institucionales
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
@@ -7,21 +7,22 @@ import pandas as pd
 from datetime import datetime
 import re
 import time
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse, parse_qs
 
-# ----------------- CONFIG -----------------
-st.set_page_config(page_title="Scraper Electromedicina V13", layout="wide")
-st.title("🩺 Scraper Electromedicina Argentina — V13")
-st.write("Añadidas fuentes: LinkedIn (pasivo), sitios institucionales y COMPR.AR. Prioridad: calidad sobre cantidad.")
+# ------------- CONFIG -------------
+st.set_page_config(page_title="Scraper Electromedicina V15", layout="wide")
+st.title("🩺 Scraper Electromedicina Argentina — V15 (LinkedIn pasivo + institucionales)")
+st.write("Búsqueda intensiva en LinkedIn (posts públicos indexados por Google) usando snippets + sitios de distribuidores/institucionales argentinos. Prioriza calidad: hospital + equipo.")
 
-# ----------------- FILTROS Y LISTAS (AMPLIADOS) -----------------
+# ------------- LISTAS Y DICT -------------
+# términos ampliados y de contexto
 equipos_keywords = [
     "resonador", "resonancia magnética", "resonancia", "rmn",
     "tomógrafo", "tomografía", "tomografo", "tc", "scanner", "escáner",
     "rayos x", "radiografía", "radiografia", "radiología", "radiologia",
     "angiografo", "angiografía", "angiografia", "hemodinamia",
     "ecógrafo", "ecografía", "ecografo", "ecografia", "ultrasonido",
-    "mamógrafo", "mamografía", "mamografo", "PET", "SPECT",
+    "mamógrafo", "mamografía", "mamografo", "pet", "spect",
     "instaló", "instalaron", "adquirió", "adquirieron", "donó", "donaron",
     "incorporó", "incorporaron", "estrenó", "sumó", "entregó", "renovó",
     "nueva sala", "nuevo equipo", "modernización", "modernizacion"
@@ -47,48 +48,35 @@ modalidad_dict = {
     "MG": ["mamógrafo", "mamografia", "mamografía"]
 }
 
-# ----------------- FUENTES BASE -----------------
-sources = {
-    "Google News": "https://news.google.com/search?q={query}&hl=es-419&gl=AR&ceid=AR:es-419",
-    "Clarin": "https://www.clarin.com/salud/",
-    "Infobae": "https://www.infobae.com/salud/",
-    "La Nación": "https://www.lanacion.com.ar/sociedad/salud/",
-    "Cronista": "https://www.cronista.com/category/salud/",
-    "Ministerio de Salud": "https://www.argentina.gob.ar/salud/noticias"
-}
-
-# ----------------- FUENTES INSTITUCIONALES (ejemplos) -----------------
+# ------------- FUENTES INSTITUCIONALES / DISTRIBUIDORES -------------
+# Agregá o reemplazá URLs locales que conozcas para más eficacia.
 institutional_sites = {
-    "Philips AR": "https://www.philips.com.ar/healthcare",
-    "Siemens Healthineers AR": "https://www.siemens-healthineers.com/ar",
-    "Mindray LatAm": "https://www.mindray.com/en/",
-    # Ten en cuenta que algunos de estos tienen estructura internacional; se usan como ejemplos.
+    "Philips AR - News": "https://www.philips.com.ar/a-w/about/news.html",
+    "Siemens Healthineers AR (global / noticias)": "https://www.siemens-healthineers.com/es-ar",
+    "Mindray - News": "https://www.mindray.com/en/news.html",
+    # ejemplos locales de distribuidores que suelen publicar instalaciones:
+    # "Distribuidor Ejemplo": "https://www.distribuidorejemplo.com.ar/noticias"
 }
 
-# COMPR.AR (heurística de búsqueda pública) - usar comprar.gob.ar si disponible
-comprar_search = "https://www.argentina.gob.ar/compras?search="  # heurística, puede variar por región
+comprar_search = "https://www.argentina.gob.ar/compras?search="  # heurística
 
-# ----------------- GOOGLE NEWS QUERY (ARGENTINA, ESPAÑOL) -----------------
-gn_terms = [
-    "electromedicina", "resonador", "resonancia", "tomógrafo", "tomografia", "rayos X",
-    "angiografo", "ecógrafo", "mamógrafo", "hospital", "instaló", "adquirió", "donó",
-    "nuevo equipo", "incorporó", "modernización"
-]
-gn_query = "+OR+".join([t.replace(" ", "+") for t in gn_terms])
-
-# ----------------- SIDEBAR -----------------
-st.sidebar.header("Opciones")
-selected_source = st.sidebar.selectbox("Fuente principal", ["Todas"] + list(sources.keys()) + list(institutional_sites.keys()))
-pages = st.sidebar.slider("Páginas Google News a recorrer (cada página ≈ 10 resultados)", 1, 6, 2)
-include_traditional = st.sidebar.checkbox("Incluir medios tradicionales", True)
-include_linkedin = st.sidebar.checkbox("Incluir LinkedIn (pasivo via Google Search)", True)
-include_institutional = st.sidebar.checkbox("Incluir sitios institucionales (Philips, Siemens...)", True)
-include_comprar = st.sidebar.checkbox("Incluir COMPR.AR (licitaciones)", True)
-max_links_per_site = st.sidebar.slider("Máx. enlaces por fuente (para acelerar)", 10, 150, 60, step=10)
+# ------------- PARAMS UI -------------
+st.sidebar.header("Opciones V15 - LinkedIn + institucional")
+pages_ln = st.sidebar.slider("Páginas de Google Search (LinkedIn) a recorrer", 1, 6, 3)
+include_institutional = st.sidebar.checkbox("Incluir sitios institucionales / distribuidores", True)
+include_comprar = st.sidebar.checkbox("Incluir COMPR.AR (licitaciones)", False)
+max_links_per_site = st.sidebar.slider("Máx. enlaces por sitio institucional", 10, 150, 60, step=10)
+custom_keywords = st.sidebar.text_area("Palabras clave adicionales (separadas por coma)", value="resonador,tomógrafo,angiografo,rayos X")
 st.sidebar.markdown("---")
-st.sidebar.info("LinkedIn (pasivo) busca posts públicos vía Google Search (site:linkedin.com/posts). No requiere login.")
+st.sidebar.info("Se priorizará LinkedIn (posts públicos indexados por Google). Si conocés páginas de distribuidores/hospitales locales, agregalas al diccionario 'institutional_sites' en el código para mejor cobertura.")
 
-# ----------------- UTIL / EXTRACCIONES -----------------
+# incorporar keywords custom
+if custom_keywords.strip():
+    for w in [x.strip() for x in custom_keywords.split(",") if x.strip()]:
+        if w.lower() not in [k.lower() for k in equipos_keywords]:
+            equipos_keywords.append(w)
+
+# ------------- UTILIDADES -------------
 def normalize_link(base_url, link):
     if not link:
         return None
@@ -101,19 +89,24 @@ def normalize_link(base_url, link):
         return base_url.rstrip("/") + "/" + link.lstrip("./")
     return link
 
+def safe_get_text_from_soup(soup):
+    if not soup:
+        return ""
+    return " ".join(p.get_text(separator=" ", strip=True) for p in soup.find_all("p"))
+
+def find_first_keyword(keywords, texto):
+    texto_l = (texto or "").lower()
+    for k in keywords:
+        if k.lower() in texto_l:
+            return k
+    return ""
+
 def detect_modalidad(texto):
-    texto_l = texto.lower()
+    texto_l = (texto or "").lower()
     for mod, terms in modalidad_dict.items():
         for t in terms:
             if t.lower() in texto_l:
                 return mod
-    return ""
-
-def find_first_keyword(keywords, texto):
-    texto_l = texto.lower()
-    for k in keywords:
-        if k.lower() in texto_l:
-            return k
     return ""
 
 def extract_fecha_from_soup(soup):
@@ -146,16 +139,17 @@ def extract_fecha_from_soup(soup):
             return content
     return None
 
-def safe_get_text_from_soup(soup):
-    if not soup:
-        return ""
-    return " ".join(p.get_text(separator=" ", strip=True) for p in soup.find_all("p"))
-
 def extract_hospital_name(texto):
+    if not texto:
+        return ""
     for h in hospital_indicators:
         m = re.search(rf'({h}\s+[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ0-9\-\s]+(?:de\s+[A-ZÁÉÍÓÚÑ][A-Za-z]+)?)', texto, re.IGNORECASE)
         if m:
             return " ".join(m.group(1).split())
+    # intento extra: nombres comunes "San Martín", "Santo Tomás" si aparecen con Hospital en snippet missing
+    m2 = re.search(r'([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ0-9\-\s]+ (Hospital|Hospital Regional|Sanatorio|Clínica))', texto)
+    if m2:
+        return m2.group(0).strip()
     return ""
 
 def extract_modelo_heuristic(texto, marca):
@@ -189,8 +183,12 @@ def compute_confidence(row):
         score += 20
     return min(100, score)
 
-# ----------------- PROCESS ARTICLE -----------------
-def process_article_from_link(link, source_label, headers):
+# ------------- PROCESS ARTICLE (usa snippet si el body falla) -------------
+def process_article_from_link(link, source_label, headers, snippet_text=None):
+    """
+    visita link y extrae información; si el HTML no permite leer contenido (ej LinkedIn),
+    usa 'snippet_text' como texto base para extracción.
+    """
     result = {
         "Tipo": "",
         "Modelo": "",
@@ -203,28 +201,39 @@ def process_article_from_link(link, source_label, headers):
         "Link": link,
         "Confianza": 0
     }
+
+    soup = None
+    page_text = ""
+    title = ""
+
     try:
         resp = requests.get(link, headers=headers, timeout=12)
         soup = BeautifulSoup(resp.text, "html.parser")
+        # extraer título si existe
+        if soup.title and soup.title.string:
+            title = soup.title.string.strip()
+        meta_title = soup.find("meta", {"property": "og:title"}) or soup.find("meta", {"name": "title"})
+        if not title and meta_title and meta_title.get("content"):
+            title = meta_title.get("content").strip()
+        page_text = title + " " + safe_get_text_from_soup(soup)
     except Exception:
-        return None
+        # no pudo descargar, usaremos snippet si existe
+        page_text = snippet_text or ""
+        title = "" if not title else title
 
-    title = ""
-    if soup.title and soup.title.string:
-        title = soup.title.string.strip()
-    meta_title = soup.find("meta", {"property": "og:title"}) or soup.find("meta", {"name": "title"})
-    if not title and meta_title and meta_title.get("content"):
-        title = meta_title.get("content").strip()
+    # si la página devolvió muy poco texto pero tenemos snippet, usar snippet
+    if (not page_text or len(page_text) < 80) and snippet_text:
+        page_text = (snippet_text or "") + " " + page_text
 
-    texto_completo = title + " " + safe_get_text_from_soup(soup)
-
-    tipo_detectado = find_first_keyword(equipos_keywords, texto_completo)
+    # detectar tipo (por snippet o page_text)
+    tipo_detectado = find_first_keyword(equipos_keywords, page_text)
     if not tipo_detectado:
         tipo_detectado = find_first_keyword(equipos_keywords, title)
     if tipo_detectado:
         result["Tipo"] = tipo_detectado
 
-    fecha_pub = extract_fecha_from_soup(soup)
+    # fecha: preferir extract_fecha_from_soup(soup) si hay soup
+    fecha_pub = extract_fecha_from_soup(soup) if soup else None
     if fecha_pub:
         try:
             fecha_dt = pd.to_datetime(fecha_pub, errors="coerce")
@@ -235,148 +244,166 @@ def process_article_from_link(link, source_label, headers):
         except:
             result["Fecha instalación"] = fecha_pub
     else:
-        result["Fecha instalación"] = f"*{datetime.today().strftime('%Y-%m-%d')}*"
+        # intentar extraer fecha desde snippet (patrón dd/mm/yyyy o yyyy-mm-dd)
+        if snippet_text:
+            m = re.search(r'(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})', snippet_text)
+            if m:
+                try:
+                    parsed = pd.to_datetime(m.group(1), dayfirst=True, errors="coerce")
+                    if not pd.isna(parsed):
+                        result["Fecha instalación"] = parsed.strftime("%Y-%m-%d")
+                    else:
+                        result["Fecha instalación"] = m.group(1)
+                except:
+                    result["Fecha instalación"] = m.group(1)
+            else:
+                result["Fecha instalación"] = f"*{datetime.today().strftime('%Y-%m-%d')}*"
+        else:
+            result["Fecha instalación"] = f"*{datetime.today().strftime('%Y-%m-%d')}*"
 
-    marca = find_first_keyword(marcas_keywords, texto_completo) or ""
+    # marca (por coincidencia en texto)
+    marca = find_first_keyword(marcas_keywords, page_text) or ""
     result["Marca"] = marca
 
-    modelo = extract_modelo_heuristic(texto_completo, marca)
+    # modelo heurístico
+    modelo = extract_modelo_heuristic(page_text, marca)
     result["Modelo"] = modelo
 
-    ubic = extract_hospital_name(texto_completo)
+    # hospital (preferir snippet)
+    ubic = extract_hospital_name(page_text)
     result["Ubicación (Hospital)"] = ubic
 
-    result["Modalidad"] = detect_modalidad(texto_completo)
-    result["Título"] = title
-    result["Link"] = link
+    # modalidad
+    result["Modalidad"] = detect_modalidad(page_text)
 
+    result["Título"] = title or (snippet_text[:120] if snippet_text else "")
+    result["Link"] = link
     result["Confianza"] = compute_confidence(result)
+
     return result
 
-# ----------------- LINKEDIN (PASIVO via Google Search) -----------------
-def linkedin_search_links(query, pages_to_check=1, headers=None):
+# ------------- LINKEDIN: buscar en Google y extraer snippet -------------
+def linkedin_search_with_snippets(query_terms, pages_to_check=2, headers=None):
     """
-    Busca posts públicos en LinkedIn mediante Google Search con site:linkedin.com/posts
-    Retorna lista de URLs (puede fallar por bloqueos; es pasivo).
+    Busca en Google resultados site:linkedin.com/posts con query_terms (list of strings).
+    Retorna lista de tuples (url, snippet_text).
     """
-    results = []
     headers = headers or {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     base = "https://www.google.com/search?q="
-    q = f"site:linkedin.com/posts/+({query})+Argentina+\"hospital\""
+    q = f"site:linkedin.com/posts +(Argentina) +({' OR '.join(query_terms)})"
     q_enc = quote_plus(q)
+    results = []
+
     for p in range(pages_to_check):
-        # google uses start param for pagination: start=0,10,20...
         start = p * 10
         url = f"{base}{q_enc}&hl=es&start={start}"
         try:
-            resp = requests.get(url, headers=headers, timeout=10)
+            resp = requests.get(url, headers=headers, timeout=12)
             soup = BeautifulSoup(resp.text, "html.parser")
-            # Google shows links in <a> within search results; try to find 'a' tags that contain linkedin
-            for a in soup.find_all("a", href=True):
-                href = a.get("href")
-                if not href:
-                    continue
-                # google search wraps actual url in '/url?q=ACTUAL&sa=...'
-                m = re.search(r'/url\?q=(https?://[^&]+)&', href)
-                if m:
-                    actual = m.group(1)
-                else:
-                    actual = href
-                if "linkedin.com" in actual and actual.startswith("http"):
-                    if actual not in results:
-                        results.append(actual)
+            # Google muestra resultados en bloques; intentar varias heurísticas para el snippet
+            # 1) bloques con class 'BNeawe s3v9rd AP7Wnd' suelen contener snippet (varía)
+            snippet_blocks = soup.find_all("div", class_=re.compile(r'BNeawe.*'))
+            # también buscar bloques 'div.IsZvec' o 'div.VwiC3b'
+            snippets = {}
+            for block in soup.find_all("div"):
+                # buscar enlace dentro del bloque
+                a = block.find("a", href=True)
+                if a and "linkedin.com" in a.get("href"):
+                    href = a.get("href")
+                    # Google wraps redirect in '/url?q=...'
+                    m = re.search(r'/url\?q=(https?://[^&]+)&', href)
+                    link = m.group(1) if m else href
+                    # snippet text: buscar siguiente <div> con texto corto o el propio block text
+                    text = block.get_text(" ", strip=True)
+                    # Sanitize: evitar largos excesivos
+                    snippet = text if text and len(text) < 800 else (block.get_text(" ", strip=True)[:800] if text else "")
+                    if link not in [r[0] for r in results]:
+                        results.append((link, snippet))
+            # fallback: parse 'a' tags and try to get adjacent span/div snippet
+            if not results:
+                for a in soup.find_all("a", href=True):
+                    href = a.get("href")
+                    if not href:
+                        continue
+                    m = re.search(r'/url\?q=(https?://[^&]+)&', href)
+                    actual = m.group(1) if m else href
+                    if "linkedin.com" in actual:
+                        # try to find snippet in parent or sibling
+                        parent = a.parent
+                        snippet = ""
+                        # look for sibling div or span with short text
+                        for sib in parent.find_all_next(['div', 'span'], limit=4):
+                            txt = sib.get_text(" ", strip=True)
+                            if txt and len(txt) < 900:
+                                snippet = txt
+                                break
+                        results.append((actual, snippet))
             time.sleep(0.3)
         except Exception:
+            # ignorar página si falla
             continue
-    return results
+    # dedupe preserving order
+    dedup = []
+    seen = set()
+    for u, s in results:
+        if u not in seen:
+            dedup.append((u, s))
+            seen.add(u)
+    return dedup
 
-# ----------------- RUN: botón -----------------
-if st.button("🔍 Iniciar scraping (V13)"):
-    st.info("Iniciando scraping (fuentes ampliadas). Esto puede tardar varios minutos según opciones.")
+# ------------- RUN (botón) -------------
+if st.button("🔍 Iniciar scraping (V15)"):
+    st.info("Iniciando scraping enfocado en LinkedIn (snippets) + sitios institucionales. Esto puede tardar varios minutos.")
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
     collected = []
     seen_links = set()
     progress = st.progress(0)
     status_text = st.empty()
-    total_expected = 0
 
-    # preparar fuentes a ejecutar
-    sources_to_run = []
-    if selected_source == "Todas":
-        sources_to_run.append(("Google News", sources["Google News"].format(query=gn_query)))
-        if include_traditional:
-            for k in ["Clarin", "Infobae", "La Nación", "Cronista", "Ministerio de Salud"]:
-                sources_to_run.append((k, sources[k]))
-        if include_institutional:
-            for k, v in institutional_sites.items():
-                sources_to_run.append((k, v))
-        if include_comprar:
-            sources_to_run.append(("COMPR.AR", comprar_search + quote_plus("equipamiento OR tomógrafo OR resonador")))
-        if include_linkedin:
-            # linkedin handled separately below
-            pass
-    else:
-        # single selection: may be base source or institutional
-        if selected_source in sources:
-            sources_to_run.append((selected_source, sources[selected_source].format(query=gn_query)))
-        elif selected_source in institutional_sites:
-            sources_to_run.append((selected_source, institutional_sites[selected_source]))
+    # preparar query terms para LinkedIn (keywords más contextos)
+    query_terms = ["hospital", "clínica", "sanatorio", "instaló", "adquirió", "donó", "incorporó", "nuevo equipo", "tomógrafo", "resonador", "rayos x", "angiografo"]
+    # también agregar los equipos_keywords que hayas personalizado
+    for w in equipos_keywords:
+        if w not in query_terms:
+            query_terms.append(w)
 
-    # estimación (muy aproximada)
-    total_expected += pages * 10
-    total_expected += len(sources_to_run) * min(max_links_per_site, 50)
-
+    total_expected = pages_ln * 10
+    if include_institutional:
+        total_expected += len(institutional_sites) * min(max_links_per_site, 40)
     processed = 0
     errors = 0
 
-    # 1) Google News (paginado)
-    for label, url in sources_to_run:
-        status_text.text(f"Scrapeando fuente: {label}")
-        # special handling for Google News URLs which contain 'news.google'
-        if "news.google" in url:
-            for p in range(pages):
-                start = p * 10
-                gn_url = url + f"&start={start}"
-                try:
-                    resp = requests.get(gn_url, headers=headers, timeout=12)
-                    soup = BeautifulSoup(resp.text, "html.parser")
-                    anchors = soup.find_all("a", href=True)
-                    local_count = 0
-                    for a in anchors:
-                        href = a.get("href")
-                        title_text = a.get_text().strip()
-                        if not title_text or not href:
-                            continue
-                        # heurística para link real
-                        if href.startswith("./") or href.startswith("/"):
-                            link = normalize_link(url, href.lstrip("."))
-                        elif href.startswith("/url?"):
-                            # google redirect pattern: parse actual url
-                            m = re.search(r'/url\?q=(https?://[^&]+)&', href)
-                            if m:
-                                link = m.group(1)
-                            else:
-                                link = href
-                        else:
-                            link = href
-                        if not link or link in seen_links:
-                            continue
-                        seen_links.add(link)
-                        processed += 1
-                        art = process_article_from_link(link, "Google News", headers)
-                        if art and art.get("Ubicación (Hospital)") and art.get("Tipo"):
-                            collected.append(art)
-                        local_count += 1
-                        progress.progress(min(100, int((processed / max(1, total_expected)) * 100)))
-                        if local_count >= 12:
-                            break
-                    time.sleep(0.3)
-                except Exception:
-                    errors += 1
-                    continue
-        elif label == "COMPR.AR":
-            # heurística: buscar en la página pública (si disponible) y extraer links con 'compra' o 'licitacion'
+    # 1) LinkedIn (pasivo) via Google Search snippets
+    status_text.text("Buscando posts públicos de LinkedIn vía Google Search (snippets)...")
+    ln_results = linkedin_search_with_snippets(query_terms, pages_to_check=pages_ln, headers=headers)
+    for link, snippet in ln_results:
+        processed += 1
+        progress.progress(min(100, int((processed / max(1, total_expected)) * 100)))
+        # normalizar redirecciones / quitar parámetros google
+        parsed = urlparse(link)
+        if parsed.netloc.endswith("google.com") and "q" in parse_qs(parsed.query):
+            # try to extract from q param
+            try:
+                qv = parse_qs(parsed.query).get("q")[0]
+                link = qv
+            except:
+                pass
+        if link in seen_links:
+            continue
+        seen_links.add(link)
+        try:
+            art = process_article_from_link(link, "LinkedIn", headers, snippet_text=snippet)
+            if art and art.get("Ubicación (Hospital)") and art.get("Tipo"):
+                collected.append(art)
+        except Exception:
+            errors += 1
+        time.sleep(0.25)
+
+    # 2) institucionales / distribuidores
+    if include_institutional:
+        for label, url in institutional_sites.items():
+            status_text.text(f"Scrapeando institucional: {label}")
             try:
                 resp = requests.get(url, headers=headers, timeout=12)
                 soup = BeautifulSoup(resp.text, "html.parser")
@@ -384,36 +411,8 @@ if st.button("🔍 Iniciar scraping (V13)"):
                 links = []
                 for a in anchors:
                     href = a.get("href")
-                    text = a.get_text().strip()
-                    if not href or not text:
-                        continue
-                    full = normalize_link(url, href)
-                    if full and full not in seen_links:
-                        links.append(full)
-                        seen_links.add(full)
-                    if len(links) >= max_links_per_site:
-                        break
-                for link in links:
-                    processed += 1
-                    art = process_article_from_link(link, "COMPR.AR", headers)
-                    if art and art.get("Ubicación (Hospital)") and art.get("Tipo"):
-                        collected.append(art)
-                    progress.progress(min(100, int((processed / max(1, total_expected)) * 100)))
-                    time.sleep(0.2)
-            except Exception:
-                errors += 1
-                continue
-        else:
-            # sitios tradicionales o institucionales
-            try:
-                resp = requests.get(url, headers=headers, timeout=12)
-                soup = BeautifulSoup(resp.text, "html.parser")
-                anchors = soup.find_all("a", href=True)
-                links = []
-                for a in anchors:
-                    href = a.get("href")
-                    text = a.get_text().strip()
-                    if not href or not text:
+                    txt = a.get_text(strip=True)
+                    if not href or not txt:
                         continue
                     full = normalize_link(url, href)
                     if not full or full in seen_links:
@@ -422,46 +421,58 @@ if st.button("🔍 Iniciar scraping (V13)"):
                     seen_links.add(full)
                     if len(links) >= max_links_per_site:
                         break
+                # procesar links
                 for link in links:
                     processed += 1
-                    art = process_article_from_link(link, label, headers)
-                    if art and art.get("Ubicación (Hospital)") and art.get("Tipo"):
-                        collected.append(art)
                     progress.progress(min(100, int((processed / max(1, total_expected)) * 100)))
+                    try:
+                        art = process_article_from_link(link, label, headers)
+                        if art and art.get("Ubicación (Hospital)") and art.get("Tipo"):
+                            collected.append(art)
+                    except Exception:
+                        errors += 1
                     time.sleep(0.25)
             except Exception:
                 errors += 1
                 continue
 
-    # 2) LinkedIn (pasivo) - buscar posts públicos vía Google Search site:linkedin.com/posts
-    if include_linkedin:
-        status_text.text("Buscando posts públicos en LinkedIn (pasivo)")
-        # query para linkedin: usar términos similares a gn_terms
-        linkedin_query = " OR ".join([q for q in gn_terms if q])
-        # limitar páginas a same 'pages' param
-        ln_links = linkedin_search_links(linkedin_query, pages_to_check=pages, headers=headers)
-        for link in ln_links[:max_links_per_site]:
-            if link in seen_links:
-                continue
-            seen_links.add(link)
-            processed += 1
-            art = process_article_from_link(link, "LinkedIn", headers)
-            if art and art.get("Ubicación (Hospital)") and art.get("Tipo"):
-                collected.append(art)
-            progress.progress(min(100, int((processed / max(1, total_expected)) * 100)))
-            time.sleep(0.3)
+    # 3) COMPR.AR (opcional heurístico)
+    if include_comprar:
+        status_text.text("Buscando en COMPR.AR (heurístico)...")
+        try:
+            url = comprar_search + quote_plus("equipamiento OR tomógrafo OR resonador")
+            resp = requests.get(url, headers=headers, timeout=12)
+            soup = BeautifulSoup(resp.text, "html.parser")
+            anchors = soup.find_all("a", href=True)
+            count = 0
+            for a in anchors:
+                href = a.get("href")
+                txt = a.get_text(strip=True)
+                if not href or not txt:
+                    continue
+                full = normalize_link(url, href)
+                if not full or full in seen_links:
+                    continue
+                seen_links.add(full)
+                processed += 1
+                art = process_article_from_link(full, "COMPR.AR", headers)
+                if art and art.get("Ubicación (Hospital)") and art.get("Tipo"):
+                    collected.append(art)
+                count += 1
+                progress.progress(min(100, int((processed / max(1, total_expected)) * 100)))
+                if count >= max_links_per_site:
+                    break
+                time.sleep(0.2)
+        except Exception:
+            errors += 1
 
     status_text.text("Finalizado. Preparando resultados...")
 
-    # construir DataFrame y filtrado final (calidad)
+    # construir DataFrame final
     if collected:
         df = pd.DataFrame(collected).drop_duplicates(subset=["Link"]).reset_index(drop=True)
         df["Confianza"] = df.apply(compute_confidence, axis=1)
-
-        # mantener solo filas con hospital + tipo (criterio de calidad)
-        df = df[(df["Ubicación (Hospital)"].astype(bool)) & (df["Tipo"].astype(bool))].copy()
-
-        # ordenar por Confianza y Fecha (no cursiva)
+        # ordenar por Confianza y fecha no-cursiva
         def parse_fecha_sort(x):
             if isinstance(x, str) and x.startswith("*") and x.endswith("*"):
                 return pd.NaT
@@ -476,6 +487,7 @@ if st.button("🔍 Iniciar scraping (V13)"):
         st.dataframe(df, use_container_width=True)
 
         csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Descargar CSV (V13)", csv, "resultados_scraper_v13.csv", "text/csv")
+        st.download_button("📥 Descargar CSV (V15)", csv, "resultados_scraper_v15.csv", "text/csv")
     else:
-        st.warning("No se encontraron artículos que cumplan el criterio (hospital + equipo). Intentá aumentar páginas o incluir más fuentes.")
+        st.warning("No se encontraron artículos que cumplan el criterio (hospital + equipo). Probá aumentar páginas LinkedIn o agregar páginas institucionales concretas.")
+
